@@ -301,7 +301,7 @@ Post.prototype.refresh_type = function() {
 
 Post.prototype.queue_report = function() {
     cancel_report(board, this.num);
-    var report_url = document.getElementsByTagName("form")[0].action + "?mode=report&no=" + this.num;
+    var report_url = document.getElementsByName("delform")[0].action + "?mode=report&no=" + this.num;
     report_queue.push(report_url + "\t" + board + "\t" + this.num + "\t" + this.type + "\t" + new Date().getTime());
     refresh_reports();
     if (report_queue.size() > captcha_queue.size()) {
