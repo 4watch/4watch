@@ -7,7 +7,7 @@
 
 // Thanks to Couchy for some needed fixes
 
-var VERSION = 15;
+var VERSION = 16;
 var ELEMENT_NODE = 1;
 var TEXT_NODE = 3;
 var DOCUMENT_POSITION_CONTAINS = 0x08;
