@@ -7,7 +7,7 @@
 
 // Thanks to Couchy for some needed fixes
 
-var VERSION = 16;
+var VERSION = 17;
 var ELEMENT_NODE = 1;
 var TEXT_NODE = 3;
 var DOCUMENT_POSITION_CONTAINS = 0x08;
@@ -19,6 +19,7 @@ var REPORT_WAIT = 60000;
 var MSG_DELAY = 5000;
 var BLUR_DELAY = 1000;
 var UPDATE_DELAY = 60000;
+var CAPTCHA_EXPIRE = 14400000; // 4 hours; exact value unknown
 var R_URL = 0;
 var R_BOARD = 1;
 var R_POST = 2;
@@ -82,11 +83,11 @@ var cache = {};
 var page_thread = null;
 var in_index = (location.href.replace(/\/+/g, "/").split("/").length == 4);
 var in_thread = has(location.href, "/res/");
-var hide_posts, hide_types, reports_mode, autorefresh;
+var hide_posts, hide_types, reports_mode, autorefresh, controls_position;
 var mouse_down = false;
 var window_id = GM_getValue("top_window_id", 0) + 1;
 GM_setValue("top_window_id", window_id);
-var show_hide_switch, options_switch, hide_reports_switch, captcha_switch, captcha_clear, autorefresh_switch;
+var controls, show_hide_switch, options_switch, hide_reports_switch, autorefresh_switch, position_switch;
 var hide_types_switches = {};
 
 function encode(fields) {
@@ -519,7 +520,15 @@ function report(r_url, r_board, r_post, r_type, captcha) {
             var t = response.responseText;
             var time = new Date().getTime();
             if (has(t, "You are reporting post")) {
+                // Report window OK, submit report
                 var captcha_fields = captcha.split(" ");
+                if (!(parseInt(captcha_fields[2]) > time - CAPTCHA_EXPIRE)) {
+                    // CAPTCHA too old
+                    report_queue.requeue(r_url + "\t" + r_board + "\t" + r_post + "\t" + r_type + "\t" + time);
+                    refresh_reports();
+                    wait_to_report(time);
+                    return;
+                }
                 var fields = {
                     cat: r_type,
                     recaptcha_challenge_field: unescape(captcha_fields[0]),
@@ -533,6 +542,7 @@ function report(r_url, r_board, r_post, r_type, captcha) {
                     headers: {"Content-type": "application/x-www-form-urlencoded"},
                     data: encode(fields),
                     onload: function(response2) {
+                        // Response from submitting report
                         var t2 = response2.responseText;
                         var time2 = new Date().getTime();
                         show_msg(t2, r_board, r_post);
@@ -550,6 +560,7 @@ function report(r_url, r_board, r_post, r_type, captcha) {
                     }
                 });
             } else {
+                // Error message when opening report window (haven't submitted yet)
                 show_msg(t, r_board, r_post);
                 captcha_queue.requeue(captcha);
                 if (has(t, "You have already reported this post") || has(t, "That post doesn't exist anymore.")) {
@@ -591,31 +602,39 @@ function cancel_report(r_board, r_post) {
 }
 
 function refresh_reports() {
+    while (captcha_queue.size() > 0) {
+        var captcha_time = parseInt(captcha_queue.get()[0].split(" ")[2]);
+        if (captcha_time > new Date().getTime() - CAPTCHA_EXPIRE) {
+            break;
+        } else {
+            captcha_queue.pop();
+        }
+    }
+
+    $("num_captchas").innerHTML = captcha_queue.size();
     if (reports_mode == SHOW_REPORTS) {
         $("msg_div").style.display = "block";
         $("reporting_div1").style.display = "block";
-        $("enter_div").style.display = "block";
-        $("need_span").innerHTML = "";
         $("reporting_div2").style.display = "block";
     } else if (reports_mode == HIDE_REPORTS) {
         $("msg_div").style.display = "none";
         $("reporting_div1").style.display = "none";
-        var needed = report_queue.size() - captcha_queue.size();
-        if (needed > 0) {
-            $("enter_div").style.display = "block";
-            $("need_span").innerHTML = " (need " + needed + ")";
-        } else {
-            $("enter_div").style.display = "none";
-        }
         $("reporting_div2").style.display = "none";
-        return;
     } else {
         $("msg_div").style.display = "none";
         $("reporting_div1").style.display = "none";
-        $("enter_div").style.display = "none";
+        $("need_div").style.display = "none";
         $("reporting_div2").style.display = "none";
     }
+    var needed = report_queue.size() - captcha_queue.size();
+    if (needed > 0 && (reports_mode == SHOW_REPORTS || reports_mode == HIDE_REPORTS)) {
+        $("need_div").style.display = "block";
+        $("need_span").innerHTML = needed;
+    } else {
+        $("need_div").style.display = "none";
+    }
 
+    if (reports_mode == HIDE_REPORTS) return;
     var queue = report_queue.get();
     var ncaptchas = captcha_queue.size();
     if (queue.join("\n") == refresh_reports.queue_cache && ncaptchas == refresh_reports.captcha_cache) return;
@@ -651,7 +670,6 @@ var return_captcha_timeoutID = null;
 function add_captcha() {
     document.body.removeEventListener("mouseup", return_captcha, true);
     if (return_captcha_timeoutID != null) clearTimeout(return_captcha_timeoutID);
-    captcha_switch.set(true);
     $("r_captcha_div").style.display = "block";
     unsafeWindow.Recaptcha.create(PUBLIC_KEY, "r_captcha_div", {callback: function() {
         unsafeWindow.Recaptcha.focus_response_field();
@@ -667,7 +685,7 @@ function add_captcha() {
             if (e.keyCode == 13) {
                 var challenge = $("recaptcha_challenge_field").value;
                 var response = $("recaptcha_response_field").value;
-                captcha_queue.push(escape(challenge) + " " + escape(response));
+                captcha_queue.push(escape(challenge) + " " + escape(response) + " " + new Date().getTime());
                 refresh_reports();
                 wait_to_report();
                 if (report_queue.size() > captcha_queue.size()) {
@@ -675,6 +693,8 @@ function add_captcha() {
                 } else {
                     return_captcha();
                 }
+            } else if (e.keyCode == 8 && $("recaptcha_response_field").value == "") {
+                unsafeWindow.Recaptcha.reload();
             }
         }, false);
     }});
@@ -683,7 +703,6 @@ function add_captcha() {
 function return_captcha() {
     document.body.removeEventListener("mouseup", return_captcha, true);
     if (return_captcha_timeoutID != null) clearTimeout(return_captcha_timeoutID);
-    captcha_switch.set(false);
     $("r_captcha_div").style.display = "none";
     if (showing_captcha() && $("recaptcha_widget_div")) {
         unsafeWindow.Recaptcha.create(PUBLIC_KEY, "recaptcha_widget_div");
@@ -699,12 +718,14 @@ function refresh_settings() {
     reports_mode = GM_getValue("reports_mode", SHOW_REPORTS);
     hide_types = GM_getValue("hide_types", DEFAULT_HIDE_TYPES.join(" ")).split(" ");
     autorefresh = GM_getValue("autorefresh", false);
+    controls_position = GM_getValue("controls_position", "TR");
     if (show_hide_switch) show_hide_switch.set(hide_posts);
     if (hide_reports_switch) hide_reports_switch.set(reports_mode);
     for (var type in hide_types_switches) {
         hide_types_switches[type].set(has(hide_types, type));
     }
     if (autorefresh_switch) autorefresh_switch.set(autorefresh);
+    if (position_switch) position_switch.set(controls_position);
 }
 
 function load_cache() {
@@ -771,6 +792,14 @@ function query_spam() {
     }
 }
 
+function position_controls() {
+    controls.style.position = "fixed";
+    controls.style.top    = has(controls_position, "B") ? "auto" : "15px";
+    controls.style.bottom = has(controls_position, "T") ? "auto" : "15px";
+    controls.style.left   = has(controls_position, "R") ? "auto" : "15px";
+    controls.style.right  = has(controls_position, "L") ? "auto" : "15px";
+}
+
 if (document.title == "4chan - 404" && in_thread) {
     var thread = location.href.match(/\/res\/(\d+)/);
     if (thread) {
@@ -825,9 +854,9 @@ if (in_index || in_thread) {
     }, false);
 
     // Create upper right corner controls
-    var controls = document.createElement("span");
-    controls.innerHTML = '<div style="position: fixed; right: 15px; top: 15px;">'
-        + '<div id="spam_count" style="text-align: center; font-style: italic; font-weight: bold;"></div>'
+    controls = document.createElement("div");
+    controls.innerHTML
+        = '<div id="spam_count" style="text-align: center; font-style: italic; font-weight: bold;"></div>'
         + '<div id="switches_div" style="text-align: center;">'
             + '<div id="show_hide_switch">[<a>show</a> | <a>hide</a>]</div>'
             + '<div id="options_switch">[<a>options</a>]</div>'
@@ -837,17 +866,18 @@ if (in_index || in_thread) {
             + '<div id="hide_reports_switch">[<a>show</a> | <a>hide</a> | <a>no</a>] reports</div>'
             + '<div id="hide_types">hide ' + TYPES_HTML + '</div>'
             + '<div id="autorefresh_switch">autorefresh [<a>on</a> | <a>off</a>]</div>'
+            + '<div id="position_switch">position [<a>TL</a> | <a>TR</a> | <a>BL</a> | <a>BR</a>]</div>'
+            + '<div><span id="num_captchas"></span> captchas [<span id="captcha_add"><a>add</a></span>] [<span id="captcha_clear"><a>clear</a></span>]</div>'
             + '<hr>'
         + '</div>'
         + '<div id="msg_div"></div>'
         + '<div id="reporting_div1"></div>'
-        + '<div id="enter_div" style="text-align: center;">'
-            + '[<span id="captcha_switch"><a>enter</a></span>] [<span id="captcha_clear"><a>clear</a></span>] captchas'
-            + '<span id="need_span"></span>'
+        + '<div id="need_div" style="text-align: center;">'
+            + 'need <span id="need_span"></span> captchas [<span id="captcha_add2"><a>add</a></span>]'
         + '</div>'
         + '<div id="r_captcha_div" style="display: none;"></div>'
-        + '<div id="reporting_div2"></div>'
-    + '</div>';
+        + '<div id="reporting_div2"></div>';
+    position_controls();
     document.body.appendChild(controls);
 
     refresh_spam_count();
@@ -937,31 +967,27 @@ if (in_index || in_thread) {
         }
     );
 
-    captcha_clear = new Color_switch(
-        $("captcha_clear"),
-        ["black"],
-        [true],
-        false,
+    position_switch = new Color_switch(
+        $("position_switch"),
+        ["black", "black", "black", "black"],
+        ["TL", "TR", "BL", "BR"],
+        "TR",
         function(new_value) {
-            if (confirm("Are you sure you want to clear all stored CAPTCHAs?")) {
-                captcha_queue.set([]);
-            }
+            controls_position = new_value;
+            GM_setValue("controls_position", controls_position);
+            position_switch.set(controls_position);
+            position_controls();
         }
     );
 
-    captcha_switch = new Color_switch(
-        $("captcha_switch"),
-        ["black"],
-        [true],
-        false,
-        function(new_value) {
-            if (!showing_captcha()) {
-                add_captcha();
-            } else {
-                return_captcha();
-            }
+    $("captcha_add").addEventListener("click", add_captcha, false);
+    $("captcha_add2").addEventListener("click", add_captcha, false);
+    $("captcha_clear").addEventListener("click", function() {
+        if (confirm("Are you sure you want to clear all stored CAPTCHAs?")) {
+            captcha_queue.set([]);
+            refresh_reports();
         }
-    );
+    }, false);
 
     refresh_reports();
 
