@@ -7,7 +7,9 @@
 
 // Thanks to Couchy for some needed fixes
 
-var VERSION = 17;
+(function() {
+
+var VERSION = 18;
 var ELEMENT_NODE = 1;
 var TEXT_NODE = 3;
 var DOCUMENT_POSITION_CONTAINS = 0x08;
@@ -77,13 +79,124 @@ if (Object.create === undefined) Object.create = function(O) {
     return new F();
 }
 
+if (typeof(GM_getValue) == "undefined" || (GM_getValue.toString !== undefined && has(GM_getValue.toString(), "not supported"))) GM_getValue = function(key, def) {
+    var val = localStorage.getItem(key);
+    if (val == null) {
+        return def;
+    } else {
+        try {
+            return JSON.parse(val);
+        } catch(e) {
+            return def;
+        }
+    }
+}
+
+if (typeof(GM_setValue) == "undefined" || (GM_setValue.toString !== undefined && has(GM_setValue.toString(), "not supported"))) GM_setValue = function(key, val) {
+    return localStorage.setItem(key, JSON.stringify(val));
+}
+
+var namespace = "c355b9a1f72c6c23efc026e10810b0be";
+
+function window_eval(code) {
+    if (window_eval.n === undefined) window_eval.n = 0;
+    var id = namespace + "window_eval" + window_eval.n;
+    window_eval.n++;
+    var script = document.createElement("script");
+    script.id = id;
+    script.innerHTML = code + ';document.body.removeChild(document.getElementById("' + id + '"))';
+    document.body.appendChild(script);
+}
+
+window_eval('\
+   function userscript_callback(id) {\
+        return function(data) {\
+            if (userscript_callback.argn === undefined) userscript_callback.argn = 1;\
+            var detail = 0;\
+            if (data != null) {\
+                detail = userscript_callback.argn;\
+                var key = "' + namespace + '" + "callback_arg" + userscript_callback.argn;\
+                userscript_callback.argn++;\
+                sessionStorage.setItem(key, JSON.stringify(data));\
+            }\
+            var e = document.createEvent("UIEvents");\
+            e.initUIEvent(id, false, false, window, detail);\
+            document.body.dispatchEvent(e);\
+        }\
+    }\
+');
+
+function reg_callback(name, f) {
+    if (reg_callback.n === undefined) reg_callback.n = 0;
+    var id = namespace + "callback_f" + reg_callback.n;
+    reg_callback.n++;
+    function listener(e) {
+        var data = null;
+        if (e.detail != 0) {
+            var key = namespace + "callback_arg" + e.detail;
+            data = JSON.parse(sessionStorage.getItem(key));
+            sessionStorage.removeItem(key);
+        }
+        f(data);
+        document.body.removeEventListener(id, listener, false);
+    }
+    document.body.addEventListener(id, listener, false);
+    window_eval(name + ' = userscript_callback("' + id + '")');
+}
+
+function try_GM_xmlhttpRequest(details) {
+    if (try_GM_xmlhttpRequest.fails === undefined) {
+        var onload = details.onload;
+        var onerror = details.onerror;
+        details.onload = function(response) {
+            onload(response);
+            try_GM_xmlhttpRequest.fails = false;
+        }
+        details.onerror = function() {
+            onerror();
+            try_GM_xmlhttpRequest.fails = true;
+        }
+    }
+    if (try_GM_xmlhttpRequest.fails) {
+        details.onerror();
+    } else {
+        try {
+            GM_xmlhttpRequest(details);
+        } catch(e) {
+            details.onerror();
+        }
+    }
+}
+
+function load_data(url, handler) {
+    if (has(url, "?")) {
+        url += "&t=" + new Date().getTime();
+    } else {
+        url += "?t=" + new Date().getTime();
+    }
+    try_GM_xmlhttpRequest({
+        method: "GET",
+        url: url,
+        onload: function(response) {
+            var m = response.responseText.match(/data_loaded\((.*)\)/);
+            if (m) handler(JSON.parse(m[1]));
+        },
+        onerror: function() {
+            reg_callback("data_loaded", handler);
+            var new_script = document.createElement("script");
+            new_script.src = url;
+            document.body.appendChild(new_script);
+        }
+    });
+}
+
 var board = location.href.replace(/\/+/g, "/").split("/")[2];
 var posts = {};
 var cache = {};
 var page_thread = null;
 var in_index = (location.href.replace(/\/+/g, "/").split("/").length == 4);
 var in_thread = has(location.href, "/res/");
-var hide_posts, hide_types, reports_mode, autorefresh, controls_position;
+var hide_posts, hide_types, reports_mode, autorefresh, controls_position, message;
 var mouse_down = false;
 var window_id = GM_getValue("top_window_id", 0) + 1;
 GM_setValue("top_window_id", window_id);
@@ -380,19 +493,16 @@ Spam_switch.prototype.flag = function(type, flag_e, captcha_data) {
     if (captcha_data) {
         data += "&" + captcha_data;
     }
-    GM_xmlhttpRequest({
-        method: "POST",
-        url: SERVER_ROOT + "flag.py",
-        headers: {"Content-type": "application/x-www-form-urlencoded"},
-        data: data,
-        onload: function(response) {
-            if (response.status == 204) {
-                if (TYPE[type].report && reports_mode != NO_REPORTS && !flag_e.ctrlKey) this_switch.post.queue_report();
+    load_data(
+        SERVER_ROOT + "flag.py?" + data,
+        function(response) {
+            if (response == "OK") {
+                if (TYPE[this_switch.post.type].report && reports_mode != NO_REPORTS && !flag_e.ctrlKey) this_switch.post.queue_report();
             } else {
-                this_switch.show_captcha(response.responseText, type, flag_e);
+                this_switch.show_captcha(response, type, flag_e);
             }
         }
-    });
+    );
 }
 
 Spam_switch.prototype.show_captcha = function(html, type, flag_e) {
@@ -512,30 +622,34 @@ function wait_to_report(next_report) {
     report(entry[0], entry[1], entry[2], entry[3], captcha);
 }
 
+function report_fields(r_url, r_board, r_post, r_type, captcha) {
+    var time = new Date().getTime();
+    var captcha_fields = captcha.split(" ");
+    if (!(parseInt(captcha_fields[2]) > time - CAPTCHA_EXPIRE)) {
+        // CAPTCHA too old
+        report_queue.requeue(r_url + "\t" + r_board + "\t" + r_post + "\t" + r_type + "\t" + time);
+        refresh_reports();
+        wait_to_report(time);
+        return;
+    }
+    return {
+        cat: r_type,
+        recaptcha_challenge_field: unescape(captcha_fields[0]),
+        recaptcha_response_field: unescape(captcha_fields[1]),
+        board: r_board,
+        no: r_post
+    };
+}
+
 function report(r_url, r_board, r_post, r_type, captcha) {
-    GM_xmlhttpRequest({
+    try_GM_xmlhttpRequest({
         method: "GET",
         url: r_url,
         onload: function(response) {
             var t = response.responseText;
-            var time = new Date().getTime();
             if (has(t, "You are reporting post")) {
                 // Report window OK, submit report
-                var captcha_fields = captcha.split(" ");
-                if (!(parseInt(captcha_fields[2]) > time - CAPTCHA_EXPIRE)) {
-                    // CAPTCHA too old
-                    report_queue.requeue(r_url + "\t" + r_board + "\t" + r_post + "\t" + r_type + "\t" + time);
-                    refresh_reports();
-                    wait_to_report(time);
-                    return;
-                }
-                var fields = {
-                    cat: r_type,
-                    recaptcha_challenge_field: unescape(captcha_fields[0]),
-                    recaptcha_response_field: unescape(captcha_fields[1]),
-                    board: r_board,
-                    no: r_post
-                };
+                var fields = report_fields(r_url, r_board, r_post, r_type, captcha);
                 GM_xmlhttpRequest({
                     method: "POST",
                     url: r_url,
@@ -561,6 +675,7 @@ function report(r_url, r_board, r_post, r_type, captcha) {
                 });
             } else {
                 // Error message when opening report window (haven't submitted yet)
+                var time = new Date().getTime();
                 show_msg(t, r_board, r_post);
                 captcha_queue.requeue(captcha);
                 if (has(t, "You have already reported this post") || has(t, "That post doesn't exist anymore.")) {
@@ -571,8 +686,32 @@ function report(r_url, r_board, r_post, r_type, captcha) {
                 }
                 refresh_reports();
             }
+        },
+        onerror: function() {
+            var frame = document.createElement("iframe");
+            frame.style.display = "none";
+            frame.src = 'javascript:\'<form id=report action="' + r_url + '" method=POST>';
+            var fields = report_fields(r_url, r_board, r_post, r_type, captcha);
+            for (var name in fields) {
+                frame.src += '<input name="' + html_escape(name) + '" value="' + html_escape(fields[name]) + '">';
+            }
+            frame.src += '</form><script>setTimeout(function(){document.getElementById("report").submit()}, 0)</script>\'';
+            document.body.appendChild(frame);
         }
     });
+}
+
+function html_escape(s) {
+    s2 = "";
+    for (var i = 0; i < s.length; i++) {
+        var c = s.charAt(i);
+        if (has(" 0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ", c)) {
+            s2 += c;
+        } else {
+            s2 += "&#" + s.charCodeAt(i) + ";";
+        }
+    }
+    return s2;
 }
 
 function show_msg(msg, board, post) {
@@ -671,8 +810,8 @@ function add_captcha() {
     document.body.removeEventListener("mouseup", return_captcha, true);
     if (return_captcha_timeoutID != null) clearTimeout(return_captcha_timeoutID);
     $("r_captcha_div").style.display = "block";
-    unsafeWindow.Recaptcha.create(PUBLIC_KEY, "r_captcha_div", {callback: function() {
-        unsafeWindow.Recaptcha.focus_response_field();
+    reg_callback("setup_captcha", function() {
+        window_eval('Recaptcha.focus_response_field()');
         $("recaptcha_response_field").addEventListener("blur", function(e) {
             if (mouse_down) {
                 document.body.addEventListener("mouseup", return_captcha, true);
@@ -689,15 +828,16 @@ function add_captcha() {
                 refresh_reports();
                 wait_to_report();
                 if (report_queue.size() > captcha_queue.size()) {
-                    unsafeWindow.Recaptcha.reload();
+                    window_eval('Recaptcha.reload()');
                 } else {
                     return_captcha();
                 }
             } else if (e.keyCode == 8 && $("recaptcha_response_field").value == "") {
-                unsafeWindow.Recaptcha.reload();
+                window_eval('Recaptcha.reload()');
             }
         }, false);
-    }});
+    });
+    window_eval('Recaptcha.create("' + PUBLIC_KEY + '", "r_captcha_div", {callback: setup_captcha})');
 }
 
 function return_captcha() {
@@ -705,7 +845,7 @@ function return_captcha() {
     if (return_captcha_timeoutID != null) clearTimeout(return_captcha_timeoutID);
     $("r_captcha_div").style.display = "none";
     if (showing_captcha() && $("recaptcha_widget_div")) {
-        unsafeWindow.Recaptcha.create(PUBLIC_KEY, "recaptcha_widget_div");
+        window_eval('Recaptcha.create("' + PUBLIC_KEY + '", "recaptcha_widget_div")');
     }
 }
 
@@ -763,32 +903,24 @@ function query_spam() {
     if (post_list.length > 0) spam_params.posts = post_list.join(" ");
     if (page_thread) spam_params.thread = page_thread.num;
     if (post_list.length > 0 || page_thread) {
-        GM_xmlhttpRequest({
-            method: "GET",
-            url: SERVER_ROOT + "spam.py?" + encode(spam_params),
-            onload: function(response) {
-                var spam_list = response.responseText.replace(/\*/g, "").split(" ");
-                var spam_list2 = {};
-                var type = "vio";
-                for (var i = 0; i < spam_list.length; i++) {
-                    if (/^\d+$/.test(spam_list[i])) {
-                        spam_list2[spam_list[i]] = type;
-                    } else {
-                        type = spam_list[i];
-                    }
-                }
+        load_data(
+            SERVER_ROOT + "spam.py?" + encode(spam_params),
+            function(response) {
                 load_cache();
                 for (var num in posts) {
                     if (posts[num].type != "phide") {
-                        if (has(spam_list, num)) {
-                            posts[num].set_type(spam_list2[num]);
-                        } else {
-                            posts[num].set_type("OK");
-                        }
+                        posts[num].set_type(response.spam_list[num] || "OK");
+                    }
+                }
+                if (response.message) {
+                    message = response.message;
+                    if ($("update_div")) {
+                        $("update_div").innerHTML = response.message;
+                        $("update_div").style.display = "block";
                     }
                 }
             }
-        });
+        );
     }
 }
 
@@ -804,10 +936,7 @@ if (document.title == "4chan - 404" && in_thread) {
     var thread = location.href.match(/\/res\/(\d+)/);
     if (thread) {
         thread = thread[1];
-        GM_xmlhttpRequest({
-            method: "GET",
-            url: SERVER_ROOT + "gone.py?" + encode({board: board, thread: thread})
-        });
+        load_data(SERVER_ROOT + "gone.py?" + encode({board: board, thread: thread}));
     }
 }
 
@@ -815,11 +944,13 @@ if (in_index || in_thread) {
     refresh_settings();
 
     // add reCAPTCHA if not present
-    if (unsafeWindow.Recaptcha === undefined) {
-        var rs = document.createElement("script");
-        rs.src = "http://api.recaptcha.net/js/recaptcha_ajax.js";
-        document.body.appendChild(rs);
-    }
+    window_eval('\
+        if (typeof(Recaptcha) == "undefined") {\
+            var rs = document.createElement("script");\
+            rs.src = "http://api.recaptcha.net/js/recaptcha_ajax.js";\
+            document.body.appendChild(rs);\
+        }\
+    ');
 
     // Track mouse state
     document.body.addEventListener("mousedown", function(e) {
@@ -856,7 +987,8 @@ if (in_index || in_thread) {
     // Create upper right corner controls
     controls = document.createElement("div");
     controls.innerHTML
-        = '<div id="spam_count" style="text-align: center; font-style: italic; font-weight: bold;"></div>'
+        = '<div id="update_div" style="display: none; text-align: center;"></div>'
+        + '<div id="spam_count" style="text-align: center; font-style: italic; font-weight: bold;"></div>'
         + '<div id="switches_div" style="text-align: center;">'
             + '<div id="show_hide_switch">[<a>show</a> | <a>hide</a>]</div>'
             + '<div id="options_switch">[<a>options</a>]</div>'
@@ -879,6 +1011,11 @@ if (in_index || in_thread) {
         + '<div id="reporting_div2"></div>';
     position_controls();
     document.body.appendChild(controls);
+
+    if (message) {
+        $("update_div").innerHTML = response.message;
+        $("update_div").style.display = "block";
+    }
 
     refresh_spam_count();
 
@@ -959,7 +1096,7 @@ if (in_index || in_thread) {
         $("autorefresh_switch"),
         ["green", "red"],
         [true, false],
-        false,
+        autorefresh,
         function(new_value) {
             autorefresh = new_value;
             GM_setValue("autorefresh", autorefresh);
@@ -971,7 +1108,7 @@ if (in_index || in_thread) {
         $("position_switch"),
         ["black", "black", "black", "black"],
         ["TL", "TR", "BL", "BR"],
-        "TR",
+        controls_position,
         function(new_value) {
             controls_position = new_value;
             GM_setValue("controls_position", controls_position);
@@ -1012,3 +1149,5 @@ if (in_index || in_thread) {
     // Start post reporter
     wait_to_report();
 }
+
+})();
