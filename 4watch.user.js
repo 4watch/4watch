@@ -9,7 +9,7 @@
 
 (function() {
 
-var VERSION = 18;
+var VERSION = 19;
 var ELEMENT_NODE = 1;
 var TEXT_NODE = 3;
 var DOCUMENT_POSITION_CONTAINS = 0x08;
@@ -837,7 +837,8 @@ function add_captcha() {
             }
         }, false);
     });
-    window_eval('Recaptcha.create("' + PUBLIC_KEY + '", "r_captcha_div", {callback: setup_captcha})');
+    if ($("recaptcha_area")) $("recaptcha_area").parentNode.removeChild($("recaptcha_area"));
+    window_eval('Recaptcha.create("' + PUBLIC_KEY + '", "r_captcha_div", {theme: "clean", callback: setup_captcha})');
 }
 
 function return_captcha() {
@@ -845,7 +846,7 @@ function return_captcha() {
     if (return_captcha_timeoutID != null) clearTimeout(return_captcha_timeoutID);
     $("r_captcha_div").style.display = "none";
     if (showing_captcha() && $("recaptcha_widget_div")) {
-        window_eval('Recaptcha.create("' + PUBLIC_KEY + '", "recaptcha_widget_div")');
+        window_eval('Recaptcha.create("' + PUBLIC_KEY + '", "recaptcha_widget_div", {theme: "clean"})');
     }
 }
 
