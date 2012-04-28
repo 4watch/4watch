@@ -3,13 +3,14 @@
 // @namespace      c355b9a1f72c6c23efc026e10810b0be
 // @description    Spam blocker and report queuer for 4chan.  Reports spam to both 4chan and to the 4watch database, and hides posts and threads others have reported.
 // @include        http://boards.4chan.org/*
+// @include        https://boards.4chan.org/*
 // ==/UserScript==
 
 // Thanks to Couchy for some needed fixes
 
 (function() {
 
-var VERSION = 19;
+var VERSION = 20;
 var ELEMENT_NODE = 1;
 var TEXT_NODE = 3;
 var DOCUMENT_POSITION_CONTAINS = 0x08;
@@ -376,7 +377,7 @@ Post.prototype.refresh_hidden = function(force) {
             }
         }
     } else {
-        var nodes = document.evaluate("ancestor::*[self::table or self::div]", this.hiding_qlink, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        var nodes = document.evaluate('ancestor::*[self::table or self::div and @class!="postInfo" and @class!="post reply"]', this.hiding_qlink, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
         nodes.snapshotItem(nodes.snapshotLength - 1).style.display = hidden ? "none" : "";
     }
 }
