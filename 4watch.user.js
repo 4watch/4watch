@@ -10,7 +10,7 @@
 
 (function() {
 
-var VERSION = 20;
+var VERSION = 21;
 var ELEMENT_NODE = 1;
 var TEXT_NODE = 3;
 var DOCUMENT_POSITION_CONTAINS = 0x08;
@@ -377,7 +377,7 @@ Post.prototype.refresh_hidden = function(force) {
             }
         }
     } else {
-        var nodes = document.evaluate('ancestor::*[self::table or self::div and @class!="postInfo" and @class!="post reply"]', this.hiding_qlink, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        var nodes = document.evaluate('ancestor::*[self::table or self::div and (not(contains(@class,"post")) or contains(@class,"postContainer"))]', this.hiding_qlink, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
         nodes.snapshotItem(nodes.snapshotLength - 1).style.display = hidden ? "none" : "";
     }
 }
